@@ -1,23 +1,27 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
-import luigi.worker
-from luigi.worker import Worker
-from luigi import Task, RemoteScheduler, Parameter
-import unittest
 import logging
+from helpers import unittest
+
 import luigi.notifications
+import luigi.worker
+from luigi import Parameter, RemoteScheduler, Task
+from luigi.worker import Worker
 from mock import Mock
 
 luigi.notifications.DEBUG = True
@@ -41,6 +45,7 @@ class DummyTask(Task):
 
 
 class MultiprocessWorkerTest(unittest.TestCase):
+
     def setUp(self):
         self.scheduler = RemoteScheduler()
         self.scheduler.add_worker = Mock()
@@ -55,6 +60,7 @@ class MultiprocessWorkerTest(unittest.TestCase):
         b = DummyTask("b")
 
         class MultipleRequirementTask(DummyTask):
+
             def requires(self):
                 return [a, b]
 
@@ -69,6 +75,7 @@ class MultiprocessWorkerTest(unittest.TestCase):
 
     def test_path_with_task_failures(self):
         class FailingTask(DummyTask):
+
             def run(self):
                 raise Exception("I am failing")
 
@@ -76,6 +83,7 @@ class MultiprocessWorkerTest(unittest.TestCase):
         b = FailingTask("b")
 
         class MultipleRequirementTask(DummyTask):
+
             def requires(self):
                 return [a, b]
 

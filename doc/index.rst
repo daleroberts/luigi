@@ -30,6 +30,7 @@ API Reference
 
    luigi
    luigi.contrib
+   luigi.tools
 
 
 Indices and tables

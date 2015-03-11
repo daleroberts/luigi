@@ -3,7 +3,8 @@ Graph = (function() {
         "FAILED":"#DD0000",
         "RUNNING":"#0044DD",
         "PENDING":"#EEBB00",
-        "DONE":"#00DD00"
+        "DONE":"#00DD00",
+        "DISABLED":"#808080"
     };
 
     /* Line height for items in task status legend */
@@ -126,7 +127,7 @@ Graph = (function() {
         };
     }
 
-    var graphWidth = 1110;
+    var graphWidth = window.innerWidth - 51;
 
     function DependencyGraph(containerElement) {
         this.svg = $(svgElement("svg")).appendTo($(containerElement));

@@ -1,23 +1,31 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+"""
+Contains some helper functions to run luigid in daemon mode
+"""
+from __future__ import print_function
 
-import os
-import signal
-import random
 import datetime
 import logging
 import logging.handlers
+import os
+import random
+import signal
+
 rootlogger = logging.getLogger()
 server_logger = logging.getLogger("luigi.server")
 
@@ -28,7 +36,7 @@ def check_pid(pidfile):
             pid = int(open(pidfile).read().strip())
             os.kill(pid, 0)
             return pid
-        except:
+        except BaseException:
             return 0
     return 0
 
@@ -110,7 +118,8 @@ def daemonize(cmd, pidfile=None, logdir=None, api_port=8082, address=None):
 
 
 def fork_linked_workers(num_processes):
-    """ Forks num_processes child processes.
+    """
+    Forks num_processes child processes.
 
     Returns an id between 0 and num_processes - 1 for each child process.
     Will consume the parent process and kill it and all child processes as soon as one child exits with status 0
@@ -122,17 +131,16 @@ def fork_linked_workers(num_processes):
     children = {}  # keep child indices
 
     def shutdown_handler(signum=None, frame=None):
-        print "Parent shutting down. Killing ALL THE children"
+        print("Parent shutting down. Killing ALL THE children")
         if not signum:
             signum = signal.SIGTERM
         for c in children:
-            print "Killing child %d" % c
+            print("Killing child %d" % c)
             try:
                 os.kill(c, signum)
                 os.waitpid(c, 0)
             except OSError:
-                print "Child %d is already dead" % c
-                pass
+                print("Child %d is already dead" % c)
         os._exit(0)  # exit without calling exit handler again...
 
     sigs = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]
@@ -140,7 +148,7 @@ def fork_linked_workers(num_processes):
         signal.signal(s, shutdown_handler)
         signal.signal(s, shutdown_handler)
         signal.signal(s, shutdown_handler)
-    #haven't found a way to unregister: atexit.register(shutdown_handler) #
+    # haven't found a way to unregister: atexit.register(shutdown_handler) #
 
     def fork_child(child_id, attempt):
         child_pid = os.fork()
@@ -161,7 +169,7 @@ def fork_linked_workers(num_processes):
 
     assert len(children) == num_processes
 
-    while 1:
+    while True:
         pid, status = os.wait()
         if status != 0:
             # unclean exit, restart process

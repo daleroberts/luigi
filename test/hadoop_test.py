@@ -1,36 +1,63 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
-import mock
 import os
 import sys
 import unittest
-import subprocess
+
 import luigi
+import luigi.format
 import luigi.hadoop
 import luigi.hdfs
 import luigi.mrrunner
-from luigi.mock import MockFile
-import StringIO
 import luigi.notifications
+import minicluster
+import mock
+from luigi.mock import MockTarget
+from nose.plugins.attrib import attr
+
 luigi.notifications.DEBUG = True
-File = MockFile
+
+luigi.hadoop.attach(minicluster)
 
 
-class Words(luigi.Task):
+class OutputMixin(luigi.Task):
+    use_hdfs = luigi.BoolParameter(default=False)
+
+    def get_output(self, fn):
+        if self.use_hdfs:
+            return luigi.hdfs.HdfsTarget('/tmp/' + fn, format=luigi.format.get_default_format() >> luigi.hdfs.PlainDir)
+        else:
+            return MockTarget(fn)
+
+
+class HadoopJobTask(luigi.hadoop.JobTask, OutputMixin):
+
+    def job_runner(self):
+        if self.use_hdfs:
+            return minicluster.MiniClusterHadoopJobRunner()
+        else:
+            return luigi.hadoop.LocalJobRunner()
+
+
+class Words(OutputMixin):
+
     def output(self):
-        return File('words')
+        return self.get_output('words')
 
     def run(self):
         f = self.output().open('w')
@@ -39,12 +66,8 @@ class Words(luigi.Task):
         f.close()
 
 
-class TestJobTask(luigi.hadoop.JobTask):
-    def job_runner(self):
-        return luigi.hadoop.LocalJobRunner()
+class WordCountJob(HadoopJobTask):
 
-
-class WordCountJob(TestJobTask):
     def mapper(self, line):
         for word in line.strip().split():
             self.incr_counter('word', word, 1)
@@ -54,18 +77,14 @@ class WordCountJob(TestJobTask):
         yield word, sum(occurences)
 
     def requires(self):
-        return Words()
+        return Words(self.use_hdfs)
 
     def output(self):
-        return File("luigitest")
+        return self.get_output('wordcount')
 
 
-class WordCountJobReal(WordCountJob):
-    def job_runner(self):
-        return luigi.hadoop.HadoopJobRunner(streaming_jar='test.jar')
+class WordFreqJob(HadoopJobTask):
 
-
-class WordFreqJob(TestJobTask):
     def init_local(self):
         self.n = 0
         for line in self.input_local().open('r'):
@@ -83,186 +102,166 @@ class WordFreqJob(TestJobTask):
         yield word, sum(occurences)
 
     def requires_local(self):
-        return WordCountJob()
+        return WordCountJob(self.use_hdfs)
 
     def requires_hadoop(self):
-        return Words()
+        return Words(self.use_hdfs)
 
     def output(self):
-        return File("luigitest-2")
+        return self.get_output('luigitest-2')
 
 
-class MapOnlyJob(TestJobTask):
+class MapOnlyJob(HadoopJobTask):
+
     def mapper(self, line):
         for word in line.strip().split():
             yield (word,)
 
     def requires_hadoop(self):
-        return Words()
+        return Words(self.use_hdfs)
 
     def output(self):
-        return File("luigitest-3")
+        return self.get_output('luigitest-3')
 
-class UnicodeJob(TestJobTask):
+
+class UnicodeJob(HadoopJobTask):
+
     def mapper(self, line):
         yield u'test', 1
-        yield 'test', 1
+        yield b'test', 1
 
     def reducer(self, word, occurences):
         yield word, sum(occurences)
 
     def requires(self):
-        return Words()
+        return Words(self.use_hdfs)
 
     def output(self):
-        return File("luigitest-4")
-
-class HadoopJobTest(unittest.TestCase):
-    def setUp(self):
-        MockFile.fs.clear()
-
-    def read_output(self, p):
-        count = {}
-        for line in p.open('r'):
-            k, v = line.strip().split()
-            count[k] = v
-        return count
-
-    def test_run(self):
-        luigi.build([WordCountJob()], local_scheduler=True)
-        c = self.read_output(File('luigitest'))
-        self.assertEquals(int(c['jk']), 6)
-
-    def test_run_2(self):
-        luigi.build([WordFreqJob()], local_scheduler=True)
-        c = self.read_output(File('luigitest-2'))
-        self.assertAlmostEquals(float(c['jk']), 6.0 / 33.0)
-
-    def test_map_only(self):
-        luigi.build([MapOnlyJob()], local_scheduler=True)
-        c = []
-        for line in File('luigitest-3').open('r'):
-            c.append(line.strip())
-        self.assertEquals(c[0], 'kj')
-        self.assertEquals(c[4], 'ljoi')
-
-    def test_unicode_job(self):
-        luigi.build([UnicodeJob()], local_scheduler=True)
-        c = []
-        for line in File('luigitest-4').open('r'):
-            c.append(line)
-        # Make sure unicode('test') isnt grouped with str('test')
-        # Since this is what happens when running on cluster
-        self.assertEquals(len(c), 2)
-        self.assertEquals(c[0], "test\t2\n")
-        self.assertEquals(c[0], "test\t2\n")
-
-
-    def test_run_hadoop_job_failure(self):
-        def Popen_fake(arglist, stdout=None, stderr=None, env=None, close_fds=True):
-            class P(object):
-                def wait(self):
-                    pass
-
-                def poll(self):
-                    return 1
-
-
-            p = P()
-            p.returncode = 1
-            if stdout == subprocess.PIPE:
-                p.stdout = StringIO.StringIO('stdout')
-            else:
-                stdout.write('stdout')
-            if stderr == subprocess.PIPE:
-                p.stderr = StringIO.StringIO('stderr')
-            else:
-                stderr.write('stderr')
-            return p
-
-        p = subprocess.Popen
-        subprocess.Popen = Popen_fake
-        try:
-            luigi.hadoop.run_and_track_hadoop_job([])
-        except luigi.hadoop.HadoopJobError as e:
-            self.assertEquals(e.out, 'stdout')
-            self.assertEquals(e.err, 'stderr')
-        else:
-            self.fail("Should have thrown HadoopJobError")
-        finally:
-            subprocess.Popen = p
-
-
-    def test_run_real(self):
-        # Will attempt to run a real hadoop job, but we will secretly mock subprocess.Popen
-        arglist_result = []
-
-        def Popen_fake(arglist, stdout=None, stderr=None, env=None, close_fds=True):
-            arglist_result.append(arglist)
-
-            class P(object):
-                def wait(self):
-                    pass
-                def poll(self):
-                    return 0
-            p = P()
-            p.returncode = 0
-            p.stderr = StringIO.StringIO()
-            p.stdout = StringIO.StringIO()
-            return p
-
-        h, p = luigi.hdfs.HdfsTarget, subprocess.Popen
-        luigi.hdfs.HdfsTarget, subprocess.Popen = MockFile, Popen_fake
-        try:
-            MockFile.move = lambda *args, **kwargs: None
-            WordCountJobReal().run()
-            self.assertEquals(len(arglist_result), 1)
-            self.assertEquals(arglist_result[0][0:3], ['hadoop', 'jar', 'test.jar'])
-        finally:
-            luigi.hdfs.HdfsTarget, subprocess.Popen = h, p  # restore
+        return self.get_output('luigitest-4')
 
 
 class FailingJobException(Exception):
     pass
 
 
-class FailingJob(TestJobTask):
+class FailingJob(HadoopJobTask):
+
     def init_hadoop(self):
         raise FailingJobException('failure')
 
+    def output(self):
+        return self.get_output('failing')
 
-class MrrunnerTest(unittest.TestCase):
-    def test_mrrunner(self):
-        # TODO: we're doing a lot of stuff here that depends on the internals of how
-        # we run Hadoop streaming job (in particular the create_packages_archive).
-        # We should abstract these things out into helper methods in luigi.hadoop so
-        # that we don't have to recreate all steps
-        job = WordCountJob()
-        packages = [__import__(job.__module__, None, None, 'dummy')]
-        luigi.hadoop.create_packages_archive(packages, 'packages.tar')
-        job._dump()
-        input = StringIO.StringIO('xyz fdklslkjsdf kjfdk jfdkj kdjf kjdkfj dkjf fdj j j k k l l')
-        output = StringIO.StringIO()
-        luigi.mrrunner.main(args=['mrrunner.py', 'map'], stdin=input, stdout=output)
 
-    def test_mrrunner_failure(self):
-        job = FailingJob()
-        packages = [__import__(job.__module__, None, None, 'dummy')]
-        luigi.hadoop.create_packages_archive(packages, 'packages.tar')
-        job._dump()
-        excs = []
-        def print_exception(traceback):
-            excs.append(traceback)
+class MyStreamingJob(luigi.hadoop.JobTask):
+    param = luigi.Parameter()
 
-        def run():
-            input = StringIO.StringIO()
-            output = StringIO.StringIO()
-            luigi.mrrunner.main(args=['mrrunner.py', 'map'], stdin=input, stdout=output, print_exception=print_exception)
-        self.assertRaises(FailingJobException, run)        
-        self.assertEquals(len(excs), 1) # should have been set
-        self.assertTrue(type(excs[0]), FailingJobException)
+
+def read_wordcount_output(p):
+    count = {}
+    for line in p.open('r'):
+        k, v = line.strip().split()
+        count[k] = v
+    return count
+
+
+class CommonTests(object):
+
+    @staticmethod
+    def test_run(test_case):
+        job = WordCountJob(use_hdfs=test_case.use_hdfs)
+        luigi.build([job], local_scheduler=True)
+        c = read_wordcount_output(job.output())
+        test_case.assertEqual(int(c['jk']), 6)
+
+    @staticmethod
+    def test_run_2(test_case):
+        job = WordFreqJob(use_hdfs=test_case.use_hdfs)
+        luigi.build([job], local_scheduler=True)
+        c = read_wordcount_output(job.output())
+        test_case.assertAlmostEquals(float(c['jk']), 6.0 / 33.0)
+
+    @staticmethod
+    def test_map_only(test_case):
+        job = MapOnlyJob(use_hdfs=test_case.use_hdfs)
+        luigi.build([job], local_scheduler=True)
+        c = []
+        for line in job.output().open('r'):
+            c.append(line.strip())
+        test_case.assertEqual(c[0], 'kj')
+        test_case.assertEqual(c[4], 'ljoi')
+
+    @staticmethod
+    def test_unicode_job(test_case):
+        job = UnicodeJob(use_hdfs=test_case.use_hdfs)
+        luigi.build([job], local_scheduler=True)
+        c = []
+        for line in job.output().open('r'):
+            c.append(line)
+        # Make sure unicode('test') isnt grouped with str('test')
+        # Since this is what happens when running on cluster
+        test_case.assertEqual(len(c), 2)
+        test_case.assertEqual(c[0], "test\t2\n")
+        test_case.assertEqual(c[0], "test\t2\n")
+
+    @staticmethod
+    def test_failing_job(test_case):
+        job = FailingJob(use_hdfs=test_case.use_hdfs)
+
+        success = luigi.build([job], local_scheduler=True)
+        test_case.assertFalse(success)
+
+
+class MapreduceLocalTest(unittest.TestCase):
+    use_hdfs = False
+
+    def test_run(self):
+        CommonTests.test_run(self)
+
+    def test_run_2(self):
+        CommonTests.test_run_2(self)
+
+    def test_map_only(self):
+        CommonTests.test_map_only(self)
+
+    def test_unicode_job(self):
+        CommonTests.test_unicode_job(self)
+
+    def test_failing_job(self):
+        CommonTests.test_failing_job(self)
+
+    def test_instantiate_job(self):
+        # See https://github.com/spotify/luigi/issues/738
+        MyStreamingJob('param_value')
+
+    def setUp(self):
+        MockTarget.fs.clear()
+
+
+@attr('minicluster')
+class MapreduceIntegrationTest(minicluster.MiniClusterTestCase):
+
+    """ Uses the Minicluster functionality to test this against Hadoop """
+    use_hdfs = True
+
+    def test_run(self):
+        CommonTests.test_run(self)
+
+    def test_run_2(self):
+        CommonTests.test_run_2(self)
+
+    def test_map_only(self):
+        CommonTests.test_map_only(self)
+
+    # TODO(erikbern): some really annoying issue with minicluster causes
+    # test_unicode_job to hang
+
+    def test_failing_job(self):
+        CommonTests.test_failing_job(self)
+
 
 class CreatePackagesArchive(unittest.TestCase):
+
     def setUp(self):
         sys.path.append(os.path.join('test', 'create_packages_archive_root'))
 
@@ -330,6 +329,7 @@ class CreatePackagesArchive(unittest.TestCase):
         package_subpackage_submodule = __import__("package.subpackage.submodule", None, None, 'dummy')
         luigi.hadoop.create_packages_archive([package_subpackage_submodule], '/dev/null')
         self._assert_package_subpackage(tar.return_value.add)
+
 
 if __name__ == '__main__':
     HadoopJobTest.test_run_real()

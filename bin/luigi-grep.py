@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 
-from collections import defaultdict
-
 import argparse
 import json
 import urllib2
+from collections import defaultdict
 
+from luigi import six
 
 parser = argparse.ArgumentParser(
     "luigi-grep is used to search for workflows using the luigi scheduler's json api")
@@ -18,6 +18,7 @@ parser.add_argument("--status", help="search for jobs with the given status", de
 
 
 class LuigiGrep(object):
+
     def __init__(self, host, port):
         self._host = host
         self._port = port
@@ -71,8 +72,8 @@ if __name__ == '__main__':
         results = grep.status_search(args.status)
 
     for job in results:
-        print "{name}: {status}, Dependencies:".format(name=job['name'], status=job['status'])
-        for (status, jobs) in job['deps_by_status'].iteritems():
-            print "  status={status}".format(status=status)
+        print("{name}: {status}, Dependencies:".format(name=job['name'], status=job['status']))
+        for (status, jobs) in six.iteritems(job['deps_by_status']):
+            print("  status={status}".format(status=status))
             for job in jobs:
-                print "    {job}".format(job=job)
+                print("    {job}".format(job=job))

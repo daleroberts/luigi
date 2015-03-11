@@ -1,31 +1,50 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
 import time
-from luigi.scheduler import CentralPlannerScheduler, DONE, FAILED
-import unittest
+from helpers import unittest
+
 import luigi.notifications
+from luigi.scheduler import DISABLED, DONE, FAILED, CentralPlannerScheduler
+
 luigi.notifications.DEBUG = True
 WORKER = 'myworker'
 
 
 class CentralPlannerTest(unittest.TestCase):
+
     def setUp(self):
-        self.sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
+        super(CentralPlannerTest, self).setUp()
+        conf = self.get_scheduler_config()
+        self.sch = CentralPlannerScheduler(**conf)
         self.time = time.time
 
+    def get_scheduler_config(self):
+        return {
+            'retry_delay': 100,
+            'remove_delay': 1000,
+            'worker_disconnect_delay': 10,
+            'disable_persist': 10,
+            'disable_window': 10,
+            'disable_failures': 3,
+        }
+
     def tearDown(self):
+        super(CentralPlannerTest, self).tearDown()
         if time.time != self.time:
             time.time = self.time
 
@@ -84,7 +103,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(WORKER, 'A')
         self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
         self.sch.add_task(WORKER, 'A', FAILED)
-        for t in xrange(100):
+        for t in range(100):
             self.setTime(t)
             self.assertEqual(self.sch.get_work(WORKER)['task_id'], None)
             self.sch.ping(WORKER)
@@ -103,7 +122,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(task_id='A', worker='X')
         self.sch.add_task(task_id='A', worker='Y')
         self.assertEqual(self.sch.get_work(worker='X')['task_id'], 'A')
-        for t in xrange(200):
+        for t in range(200):
             self.setTime(t)
             self.sch.ping(worker='Y')
             if t % 10 == 0:
@@ -132,7 +151,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.assertEqual(self.sch.get_work(worker='X')['task_id'], 'A')
         self.setTime(10000)
         self.sch.add_task(task_id='A', worker='Y')  # Will timeout X but not schedule A for removal
-        for i in xrange(2000):
+        for i in range(2000):
             self.setTime(10000 + i)
             self.sch.ping(worker='Y')
         self.sch.add_task(task_id='A', status=DONE, worker='Y')  # This used to raise an exception since A was removed
@@ -156,6 +175,31 @@ class CentralPlannerTest(unittest.TestCase):
         s = r['running_tasks'][0]
         self.assertEqual(s['task_id'], 'A')
         self.assertEqual(s['worker'], 'X')
+
+    def test_assistant_get_work(self):
+        self.sch.add_task(worker='X', task_id='A')
+        self.sch.add_worker('Y', [])
+
+        self.assertEqual(self.sch.get_work('Y', assistant=True)['task_id'], 'A')
+
+        # check that the scheduler recognizes tasks as running
+        running_tasks = self.sch.task_list('RUNNING', '')
+        self.assertEqual(len(running_tasks), 1)
+        self.assertEqual(list(running_tasks.keys()), ['A'])
+        self.assertEqual(running_tasks['A']['worker_running'], 'Y')
+
+    def test_task_fails_when_assistant_dies(self):
+        self.setTime(0)
+        self.sch.add_task(worker='X', task_id='A')
+        self.sch.add_worker('Y', [])
+
+        self.assertEqual(self.sch.get_work('Y', assistant=True)['task_id'], 'A')
+        self.assertEqual(list(self.sch.task_list('RUNNING', '').keys()), ['A'])
+
+        # Y dies for 50 seconds, X stays alive
+        self.setTime(50)
+        self.sch.ping('X')
+        self.assertEqual(list(self.sch.task_list('FAILED', '').keys()), ['A'])
 
     def test_scheduler_resources_none_allow_one(self):
         self.sch.add_task(worker='X', task_id='A', resources={'R1': 1})
@@ -204,6 +248,89 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(worker='Y', task_id='D', priority=0)
         self.assertEqual(self.sch.get_work(worker='Y')['task_id'], 'D')
 
+    def test_do_not_lock_resources_when_not_ready(self):
+        """ Test to make sure that resources won't go unused waiting on workers """
+        self.sch.add_task(worker='X', task_id='A', priority=10)
+        self.sch.add_task(worker='X', task_id='B', resources={'R': 1}, priority=5)
+        self.sch.add_task(worker='Y', task_id='C', resources={'R': 1}, priority=1)
+
+        self.sch.update_resources(R=1)
+        self.sch.add_worker('X', [('workers', 1)])
+        self.assertEqual('C', self.sch.get_work(worker='Y')['task_id'])
+
+    def test_lock_resources_when_one_of_multiple_workers_is_ready(self):
+        self.sch.add_task(worker='X', task_id='A', priority=10)
+        self.sch.add_task(worker='X', task_id='B', resources={'R': 1}, priority=5)
+        self.sch.add_task(worker='Y', task_id='C', resources={'R': 1}, priority=1)
+
+        self.sch.update_resources(R=1)
+        self.sch.add_worker('X', [('workers', 2)])
+        self.sch.add_worker('Y', [])
+        self.assertFalse(self.sch.get_work('Y')['task_id'])
+
+    def test_do_not_lock_resources_while_running_higher_priority(self):
+        """ Test to make sure that resources won't go unused waiting on workers """
+        self.sch.add_task(worker='X', task_id='A', priority=10)
+        self.sch.add_task(worker='X', task_id='B', resources={'R': 1}, priority=5)
+        self.sch.add_task(worker='Y', task_id='C', resources={'R': 1}, priority=1)
+
+        self.sch.update_resources(R=1)
+        self.sch.add_worker('X', [('workers', 1)])
+        self.assertEqual('A', self.sch.get_work('X')['task_id'])
+        self.assertEqual('C', self.sch.get_work('Y')['task_id'])
+
+    def test_lock_resources_while_running_lower_priority(self):
+        """ Make sure resources will be made available while working on lower priority tasks """
+        self.sch.add_task(worker='X', task_id='A', priority=4)
+        self.assertEqual('A', self.sch.get_work('X')['task_id'])
+        self.sch.add_task(worker='X', task_id='B', resources={'R': 1}, priority=5)
+        self.sch.add_task(worker='Y', task_id='C', resources={'R': 1}, priority=1)
+
+        self.sch.update_resources(R=1)
+        self.sch.add_worker('X', [('workers', 1)])
+        self.assertFalse(self.sch.get_work('Y')['task_id'])
+
+    def test_lock_resources_for_second_worker(self):
+        self.sch.add_task(worker='X', task_id='A', resources={'R': 1})
+        self.sch.add_task(worker='X', task_id='B', resources={'R': 1})
+        self.sch.add_task(worker='Y', task_id='C', resources={'R': 1}, priority=10)
+
+        self.sch.add_worker('X', {'workers': 2})
+        self.sch.add_worker('Y', {'workers': 1})
+        self.sch.update_resources(R=2)
+
+        self.assertEqual('A', self.sch.get_work('X')['task_id'])
+        self.assertFalse(self.sch.get_work('X')['task_id'])
+
+    def test_can_work_on_lower_priority_while_waiting_for_resources(self):
+        self.sch.add_task(worker='X', task_id='A', resources={'R': 1}, priority=0)
+        self.assertEqual('A', self.sch.get_work('X')['task_id'])
+
+        self.sch.add_task(worker='Y', task_id='B', resources={'R': 1}, priority=10)
+        self.sch.add_task(worker='Y', task_id='C', priority=0)
+        self.sch.update_resources(R=1)
+
+        self.assertEqual('C', self.sch.get_work('Y')['task_id'])
+
+    def test_priority_update_with_pruning(self):
+        self.setTime(0)
+        self.sch.add_task(task_id='A', worker='X')
+
+        self.setTime(50)  # after worker disconnects
+        self.sch.prune()
+        self.sch.add_task(task_id='B', deps=['A'], worker='X')
+
+        self.setTime(2000)  # after remove for task A
+        self.sch.prune()
+
+        # Here task A that B depends on is missing
+        self.sch.add_task(WORKER, task_id='C', deps=['B'], priority=100)
+        self.sch.add_task(WORKER, task_id='B', deps=['A'])
+        self.sch.add_task(WORKER, task_id='A')
+        self.sch.add_task(WORKER, task_id='D', priority=10)
+
+        self.check_task_order('ABCD')
+
     def test_update_resources(self):
         self.sch.add_task(WORKER, task_id='A', deps=['B'])
         self.sch.add_task(WORKER, task_id='B', resources={'r': 2})
@@ -216,6 +343,51 @@ class CentralPlannerTest(unittest.TestCase):
 
         # now we have enough resources
         self.check_task_order(['B', 'A'])
+
+    def test_hendle_multiple_resources(self):
+        self.sch.add_task(WORKER, task_id='A', resources={'r1': 1, 'r2': 1})
+        self.sch.add_task(WORKER, task_id='B', resources={'r1': 1, 'r2': 1})
+        self.sch.add_task(WORKER, task_id='C', resources={'r1': 1})
+        self.sch.update_resources(r1=2, r2=1)
+
+        self.assertEqual('A', self.sch.get_work(WORKER)['task_id'])
+        self.check_task_order('C')
+
+    def test_single_resource_lock(self):
+        self.sch.add_task('X', task_id='A', resources={'r': 1})
+        self.assertEqual('A', self.sch.get_work('X')['task_id'])
+
+        self.sch.add_task(WORKER, task_id='B', resources={'r': 2}, priority=10)
+        self.sch.add_task(WORKER, task_id='C', resources={'r': 1})
+        self.sch.update_resources(r=2)
+
+        # Should wait for 2 units of r to be available for B before scheduling C
+        self.check_task_order([])
+
+    def test_no_lock_if_too_many_resources_required(self):
+        self.sch.add_task(WORKER, task_id='A', resources={'r': 2}, priority=10)
+        self.sch.add_task(WORKER, task_id='B', resources={'r': 1})
+        self.sch.update_resources(r=1)
+        self.check_task_order('B')
+
+    def test_multiple_resources_lock(self):
+        self.sch.add_task('X', task_id='A', resources={'r1': 1, 'r2': 1}, priority=10)
+        self.sch.add_task(WORKER, task_id='B', resources={'r2': 1})
+        self.sch.add_task(WORKER, task_id='C', resources={'r1': 1})
+        self.sch.update_resources(r1=1, r2=1)
+
+        # should preserve both resources for worker 'X'
+        self.check_task_order([])
+
+    def test_multiple_resources_no_lock(self):
+        self.sch.add_task(WORKER, task_id='A', resources={'r1': 1}, priority=10)
+        self.sch.add_task(WORKER, task_id='B', resources={'r1': 1, 'r2': 1}, priority=10)
+        self.sch.add_task(WORKER, task_id='C', resources={'r2': 1})
+        self.sch.update_resources(r1=1, r2=2)
+
+        self.assertEqual('A', self.sch.get_work(WORKER)['task_id'])
+        # C doesn't block B, so it can go first
+        self.check_task_order('C')
 
     def check_task_order(self, order):
         for expected_id in order:
@@ -252,6 +424,122 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(WORKER, 'C', priority=10, deps=['B'])
         self.sch.add_task(WORKER, 'D', priority=6)
         self.check_task_order(['A', 'B', 'C', 'D'])
+
+    def test_disable(self):
+        self.sch.add_task(WORKER, 'A')
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be disabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 0)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], None)
+
+    def test_disable_and_reenable(self):
+        self.sch.add_task(WORKER, 'A')
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be disabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 0)
+
+        self.sch.re_enable_task('A')
+
+        # should be enabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 0)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 1)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
+
+    def test_disable_and_reenable_and_disable_again(self):
+        self.sch.add_task(WORKER, 'A')
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be disabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 0)
+
+        self.sch.re_enable_task('A')
+
+        # should be enabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 0)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 1)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
+
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be still enabled
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 0)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 1)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
+
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be disabled now
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 0)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], None)
+
+    def test_disable_and_done(self):
+        self.sch.add_task(WORKER, 'A')
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+
+        # should be disabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+        self.assertEqual(len(self.sch.task_list('FAILED', '')), 0)
+
+        self.sch.add_task(WORKER, 'A', status=DONE)
+
+        # should be enabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 0)
+        self.assertEqual(len(self.sch.task_list('DONE', '')), 1)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
+
+    def test_disable_by_worker(self):
+        self.sch.add_task(WORKER, 'A', status=DISABLED)
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 1)
+
+        self.sch.add_task(WORKER, 'A')
+
+        # should be enabled at this point
+        self.assertEqual(len(self.sch.task_list('DISABLED', '')), 0)
+        self.sch.add_task(WORKER, 'A')
+        self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
+
+    def test_task_list_beyond_limit(self):
+        sch = CentralPlannerScheduler(max_shown_tasks=3)
+        for c in 'ABCD':
+            sch.add_task(WORKER, c)
+        self.assertEqual(set('ABCD'), set(sch.task_list('PENDING', '', False).keys()))
+        self.assertEqual({'num_tasks': 4}, sch.task_list('PENDING', ''))
+
+    def test_task_list_within_limit(self):
+        sch = CentralPlannerScheduler(max_shown_tasks=4)
+        for c in 'ABCD':
+            sch.add_task(WORKER, c)
+        self.assertEqual(set('ABCD'), set(sch.task_list('PENDING', '').keys()))
+
+    def test_task_lists_some_beyond_limit(self):
+        sch = CentralPlannerScheduler(max_shown_tasks=3)
+        for c in 'ABCD':
+            sch.add_task(WORKER, c, 'DONE')
+        for c in 'EFG':
+            sch.add_task(WORKER, c)
+        self.assertEqual(set('EFG'), set(sch.task_list('PENDING', '').keys()))
+        self.assertEqual({'num_tasks': 4}, sch.task_list('DONE', ''))
 
     def test_priority_update_dependency_chain(self):
         self.sch.add_task(WORKER, 'A', priority=10, deps=['B'])

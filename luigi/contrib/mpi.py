@@ -72,8 +72,6 @@ class MPIWorker(Worker):
             keep_alive = config.getboolean('core', 'worker-keep-alive', False)
         self.keep_alive = keep_alive
 
-        # worker-count-uniques means that we will keep a worker alive only if it has a unique
-        # pending task, as well as having keep-alive true
         if count_uniques is None:
             count_uniques = config.getboolean('core', 'worker-count-uniques', False)
         self._count_uniques = count_uniques
@@ -99,7 +97,6 @@ class MPIWorker(Worker):
         self.run_succeeded = True
         self.unfulfilled_counts = collections.defaultdict(int)
 
-        # Keep info about what tasks are running (could be in other processes)
         self._task_result_queue = multiprocessing.Queue()
         self._running_tasks = {}
 
@@ -124,9 +121,6 @@ class MasterMPIWorker(MPIWorker):
                                               count_uniques=count_uniques)
         self._task_status = {}
 
-    def _refresh_task_status(self):
-        COM.Barrier()
-
     def _check_complete(self, task):
         return self._task_status.setdefault(task.task_id, task.complete())
 
@@ -142,7 +136,7 @@ class MasterMPIWorker(MPIWorker):
         # (distributed) file system.
 
         log.debug('Synchronising with slaves')
-        self._refresh_task_status()
+        COM.Barrier()
 
         slaves_alive = COM.Get_size() - 1  # minus the master
 
@@ -176,16 +170,20 @@ class SlaveMPIWorker(MPIWorker):
                  worker_processes=1, ping_interval=None, keep_alive=None,
                  wait_interval=None, max_reschedules=None, count_uniques=None):
 
-        self._task_status = {}
-
         # Here we block to allow the MasterMPIWorker to check the
         # completion status of all tasks (see `_check_complete`). This
         # is to stop SlaveMPIWorkers from thrashing the (distributed)
         # file system.
 
-        log.debug('Slave %i waiting to synchronise with Master',
-                  COM.Get_rank())
-        self._refresh_task_status()
+        log.debug('Slave %i waiting to sync with Master', COM.Get_rank())
+        COM.Barrier()
+
+        self._task_status = {}
+        send({'cmd': 'task_status', 'args': [], 'kwargs': None})
+        result, status = recv(source=0)
+        self._task_status.update(result)
+
+        log.debug("Slave %i locally updated task status.", COM.Get_rank())
 
         # Now go ahead and initialise.
         
@@ -198,27 +196,16 @@ class SlaveMPIWorker(MPIWorker):
                                              max_reschedules=max_reschedules,
                                              count_uniques=count_uniques)
 
-    def _refresh_task_status(self):
-        COM.Barrier()
-        send({'cmd': 'task_status', 'args': [], 'kwargs': None})
-        result, status = recv(source=0)
-        self._task_status.update(result)
-        log.debug("Slave %i locally updated task status.",
-                  COM.Get_rank())
-
     def _check_complete(self, task):
-        is_complete = self._task_status[task.task_id]
-        if not is_complete:
-            send({'cmd': 'check_complete',
-                  'args': [task.task_id],
-                  'kwargs': None}, 0)
-            is_complete, _ = recv(source=0)
-            self._task_status[task.task_id] = is_complete
-        return is_complete
+        if self._task_status is None:
+            return task.complete()
+        else:
+            return self._task_status[task.task_id]
 
-    def _run_task(self, task_id):
-        task = self._scheduled_tasks[task_id]
-        return super(SlaveMPIWorker, self)._run_task(task_id)
+    def run(self):
+        log.debug("Slave %i is now allowed to check_complete", COM.Get_rank())
+        self._task_status = None
+        return super(SlaveMPIWorker, self).run()
 
     def stop(self):
         send({'cmd': 'stop', 'args': [self._id], 'kwargs': None}, 0)
