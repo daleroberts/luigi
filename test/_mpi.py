@@ -101,8 +101,8 @@ if __name__ == '__main__':
     test3()
     COM.Barrier()
 
-    test4()
-    COM.Barrier()
+    #test4()
+    #COM.Barrier()
 
     # if COM.Get_rank() == 0:
     #     from pprint import pprint

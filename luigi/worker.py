@@ -315,11 +315,11 @@ class Worker(object):
 
         if worker_timeout is None:
             worker_timeout = config.getint('core', 'worker-timeout', 0)
-        self.__worker_timeout = worker_timeout
+        self.worker_timeout = worker_timeout
 
         if task_limit is None:
             task_limit = config.getint('core', 'worker-task-limit', None)
-        self.__task_limit = task_limit
+        self.task_limit = task_limit
 
         self._id = worker_id
         self._scheduler = scheduler
@@ -482,8 +482,8 @@ class Worker(object):
         return self.add_succeeded
 
     def _add(self, task, is_complete):
-        if self.__task_limit is not None and len(self._scheduled_tasks) >= self.__task_limit:
-            logger.warning('Will not schedule %s or any dependencies due to exceeded task-limit of %d', task, self.__task_limit)
+        if self.task_limit is not None and len(self._scheduled_tasks) >= self.task_limit:
+            logger.warning('Will not schedule %s or any dependencies due to exceeded task-limit of %d', task, self.task_limit)
             return
 
         formatted_traceback = None
@@ -619,11 +619,11 @@ class Worker(object):
         if task.run == NotImplemented:
             p = ExternalTaskProcess(task, self._id, self._task_result_queue,
                                     random_seed=bool(self.worker_processes > 1),
-                                    worker_timeout=self.__worker_timeout)
+                                    worker_timeout=self.worker_timeout)
         else:
             p = TaskProcess(task, self._id, self._task_result_queue,
                             random_seed=bool(self.worker_processes > 1),
-                            worker_timeout=self.__worker_timeout)
+                            worker_timeout=self.worker_timeout)
 
         self._running_tasks[task_id] = p
 
@@ -738,12 +738,12 @@ class Worker(object):
         If worker-count-uniques is true, it will also
         require that one of the tasks is unique to this worker.
         """
-        if not self.__keep_alive:
+        if not self.keep_alive:
             return False
         elif self._assistant:
             return True
         else:
-            return n_pending_tasks and (n_unique_pending or not self.__count_uniques)
+            return n_pending_tasks and (n_unique_pending or not self.count_uniques)
 
     def run(self):
         """

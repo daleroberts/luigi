@@ -59,7 +59,9 @@ class MPIWorker(Worker):
 
     def __init__(self, scheduler=MPIScheduler(), worker_id=None,
                  worker_processes=1, ping_interval=None, keep_alive=None,
-                 wait_interval=None, max_reschedules=None, count_uniques=None):
+                 wait_interval=None, max_reschedules=None, count_uniques=None,
+                 worker_timeout=None, task_limit=None, assistant=False):
+
         self.worker_processes = int(worker_processes)
         self._worker_info = self._generate_worker_info()
 
@@ -84,8 +86,17 @@ class MPIWorker(Worker):
             max_reschedules = config.getint('core', 'max-reschedules', 1)
         self._max_reschedules = max_reschedules
 
+        if worker_timeout is None:
+            worker_timeout = config.getint('core', 'worker-timeout', 0)
+        self.worker_timeout = worker_timeout
+
+        if task_limit is None:
+            task_limit = config.getint('core', 'worker-task-limit', None)
+        self.task_limit = task_limit
+
         self._id = worker_id
         self._scheduler = scheduler
+        self._assistant = assistant
 
         self.host = socket.gethostname()
         self._scheduled_tasks = {}
@@ -218,7 +229,7 @@ class WorkerSchedulerFactory(object):
             self.scheduler = MPIScheduler()
             self.worker = SlaveMPIWorker(self.scheduler)
         else:  # on master
-            self.scheduler = MasterScheduler(task_history=task_history)
+            self.scheduler = MasterScheduler(task_history_impl=task_history)
             self.worker = MasterMPIWorker(self.scheduler)
 
     def create_local_scheduler(self):
@@ -227,7 +238,7 @@ class WorkerSchedulerFactory(object):
     def create_remote_scheduler(self, host, port):
         return NotImplemented
 
-    def create_worker(self, scheduler, worker_processes=None):
+    def create_worker(self, scheduler, worker_processes=None, assistant=False):
         return self.worker
 
 
